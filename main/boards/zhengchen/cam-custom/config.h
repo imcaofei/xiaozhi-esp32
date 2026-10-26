@@ -74,4 +74,8 @@
 #define WEATHER_RETRY_INTERVAL_MS  (60 * 1000)       // retry after 1 minute on failure
 #define DATE_CLOCK_UPDATE_INTERVAL_MS (30 * 1000)    // refresh date label every 30 seconds
 
+/* Page switching (main chat page <-> weather page) */
+#define UI_PAGE_POLL_INTERVAL_MS      (1000)         // poll device state every 1 second
+#define UI_IDLE_SHOW_WEATHER_AFTER_MS (30 * 1000)    // show weather page after 30 s of idle
+
 #endif // _BOARD_CONFIG_H_

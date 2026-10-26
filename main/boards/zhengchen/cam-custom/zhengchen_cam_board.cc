@@ -3,6 +3,7 @@
 #include "display/lcd_display.h"
 #include "zhengchen_cam_custom_display.h"
 #include "weather_service.h"
+#include "ui_controller.h"
 #include "application.h"
 #include "button.h"
 #include "led/single_led.h"
@@ -93,6 +94,7 @@ private:
     Button volume_down_button_;
     LcdDisplay* display_ = nullptr;
     ZhengchenCamCustomDisplay* custom_display_ = nullptr;
+    UiController* ui_controller_ = nullptr;
     esp_timer_handle_t clock_timer_ = nullptr;
     Pca9557* pca9557_;
     Esp32Camera* camera_;
@@ -275,7 +277,7 @@ private:
         static_cast<ZhengchenCamBoard*>(arg)->UpdateDateLabel();
     }
 
-    void InitializeDateTimeWeather() {
+    void InitializeHomeUi() {
         setenv("TZ", BOARD_TIMEZONE, 1);
         tzset();
 
@@ -302,6 +304,10 @@ private:
             custom_display_->UpdateWeather(buf);
         });
         weather.Start();
+
+        // Page switching: idle -> weather page, conversation -> main page.
+        ui_controller_ = new UiController(custom_display_);
+        ui_controller_->Start();
     }
 
     void InitializeCamera() {
@@ -352,7 +358,7 @@ public:
         InitializeButtons();
         InitializeCamera();
 		InitializeController();
-        InitializeDateTimeWeather();
+        InitializeHomeUi();
         GetBacklight()->RestoreBrightness();
     }
 
