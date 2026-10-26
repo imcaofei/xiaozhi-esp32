@@ -842,7 +842,7 @@ elseif(CONFIG_BOARD_TYPE_ZHENGCHEN_CAM_CUSTOM)
     set(BOARD_DIR "zhengchen/cam-custom")
     set(BUILTIN_TEXT_FONT font_noto_sans_basic_20_4)
     set(BUILTIN_ICON_FONT font_material_symbols_20_4)
-    set(DEFAULT_EMOJI_COLLECTION noto-color-emoji_64)
+    set(DEFAULT_EMOJI_COLLECTION otto-gif)
 elseif(CONFIG_BOARD_TYPE_SPOTPEAR_ESP32_S3_1_54_MUMA)
     set(BOARD_DIR "spotpear/sp-esp32-s3-1.54-muma")
     set(BUILTIN_TEXT_FONT font_noto_sans_basic_16_4)
@@ -1384,9 +1384,15 @@ function(build_default_assets_bin)
     # Add default emoji collection if defined
     if(DEFAULT_EMOJI_COLLECTION)
         list(APPEND BUILD_ARGS "--emoji_collection" "${DEFAULT_EMOJI_COLLECTION}")
-        file(GLOB DEFAULT_EMOJI_FILES CONFIGURE_DEPENDS
-            "${NOTO_FONTS_PATH}/png/${DEFAULT_EMOJI_COLLECTION}/*"
-        )
+        if(DEFAULT_EMOJI_COLLECTION STREQUAL "otto-gif")
+            file(GLOB DEFAULT_EMOJI_FILES CONFIGURE_DEPENDS
+                "${CMAKE_SOURCE_DIR}/managed_components/txp666__otto-emoji-gif-component/gifs/*"
+            )
+        else()
+            file(GLOB DEFAULT_EMOJI_FILES CONFIGURE_DEPENDS
+                "${NOTO_FONTS_PATH}/png/${DEFAULT_EMOJI_COLLECTION}/*"
+            )
+        endif()
         list(APPEND DEFAULT_ASSETS_DEPENDENCIES ${DEFAULT_EMOJI_FILES})
     endif()
 
