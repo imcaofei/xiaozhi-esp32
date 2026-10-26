@@ -83,5 +83,10 @@
 #define PREVIEW_FPS_CAP         15                    // upper bound, paced by the sensor anyway
 #define PREVIEW_SWAP_BYTES      0                     // set to 1 if colors look wrong on the panel
 #define PREVIEW_AUTO_STOP_MS    (5 * 60 * 1000)       // auto stop preview after 5 minutes
+#define PREVIEW_ROTATION        90                    // rotate preview frames: 0 / 90 (CW) / 270
+
+/* AI photo (capture) orientation & full-screen viewing */
+#define CAMERA_IMAGE_ROTATION   90                    // rotate captured photo: 0 / 90 (CW) / 270
+#define PHOTO_VIEW_SECONDS      8                     // full-screen photo auto-hide after N seconds
 
 #endif // _BOARD_CONFIG_H_

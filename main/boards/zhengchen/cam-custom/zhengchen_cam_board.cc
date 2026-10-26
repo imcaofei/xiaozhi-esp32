@@ -353,6 +353,9 @@ private:
         config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
 
         camera_ = new Esp32Camera(config);
+        // The camera module is mounted 90 degrees rotated relative to the
+        // landscape UI; rotate captured photos upright before encoding.
+        camera_->SetImageRotation(CAMERA_IMAGE_ROTATION);
     }
 
 	void InitializeController() { InitializeMCPController(); }

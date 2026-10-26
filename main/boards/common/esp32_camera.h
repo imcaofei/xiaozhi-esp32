@@ -28,6 +28,9 @@ private:
     camera_fb_t* current_fb_ = nullptr;
     uint8_t* encode_buf_ = nullptr;  // Buffer for JPEG encoding (with optional byte swap)
     size_t encode_buf_size_ = 0;
+    int rotation_deg_ = 0;       // 0 / 90 (CW) / 270 (CCW), applied to the encode buffer
+    uint16_t encode_w_ = 0;      // Encoded frame width (after rotation)
+    uint16_t encode_h_ = 0;      // Encoded frame height (after rotation)
 
 public:
     Esp32Camera(const camera_config_t& config);
@@ -38,5 +41,7 @@ public:
     virtual bool SetHMirror(bool enabled) override;
     virtual bool SetVFlip(bool enabled) override;
     virtual bool SetSwapBytes(bool enabled) override;
+    /** Rotate captured frames before encoding/display: 0, 90 (clockwise) or 270. */
+    bool SetImageRotation(int degrees);
     virtual std::expected<std::string, std::string> Explain(const std::string& question) override;
 };

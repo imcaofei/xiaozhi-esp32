@@ -114,15 +114,39 @@ bool Esp32Camera::Capture() {
             encode_buf_size_ = data_size;
         }
 
-        // Copy data to encode buffer with optional byte swapping
+        // Copy data to encode buffer with optional byte swapping and optional
+        // 90-degree rotation (per-pixel copy; byte order inside a pixel is kept)
         uint16_t* src = (uint16_t*)current_fb_->buf;
         uint16_t* dst = (uint16_t*)encode_buf_;
-        if (swap_bytes_enabled_) {
+        const bool swap = swap_bytes_enabled_;
+        const int w = current_fb_->width;
+        const int h = current_fb_->height;
+        if (rotation_deg_ == 90 || rotation_deg_ == 270) {
+            for (int y = 0; y < h; ++y) {
+                for (int x = 0; x < w; ++x) {
+                    uint16_t px = src[y * w + x];
+                    if (swap) {
+                        px = __builtin_bswap16(px);
+                    }
+                    if (rotation_deg_ == 90) {
+                        dst[(size_t)x * h + (h - 1 - y)] = px;  // 90 degrees clockwise
+                    } else {
+                        dst[(size_t)(w - 1 - x) * h + y] = px;  // 270 degrees clockwise
+                    }
+                }
+            }
+            encode_w_ = h;
+            encode_h_ = w;
+        } else if (swap) {
             for (size_t i = 0; i < pixel_count; i++) {
                 dst[i] = __builtin_bswap16(src[i]);
             }
+            encode_w_ = w;
+            encode_h_ = h;
         } else {
             memcpy(encode_buf_, current_fb_->buf, data_size);
+            encode_w_ = w;
+            encode_h_ = h;
         }
 
         // Allocate separate buffer for preview display
@@ -133,8 +157,8 @@ bool Esp32Camera::Capture() {
             auto display = Board::GetInstance().GetDisplay();
             if (display != nullptr) {
                 display->SetPreviewImage(std::make_unique<LvglAllocatedImage>(
-                    preview_data, data_size, current_fb_->width, current_fb_->height,
-                    current_fb_->width * 2, LV_COLOR_FORMAT_RGB565));
+                    preview_data, data_size, encode_w_, encode_h_, encode_w_ * 2,
+                    LV_COLOR_FORMAT_RGB565));
             } else {
                 heap_caps_free(preview_data);
             }
@@ -174,6 +198,14 @@ bool Esp32Camera::SetSwapBytes(bool enabled) {
     return true;
 }
 
+bool Esp32Camera::SetImageRotation(int degrees) {
+    if (degrees != 0 && degrees != 90 && degrees != 270) {
+        return false;
+    }
+    rotation_deg_ = degrees;
+    return true;
+}
+
 std::expected<std::string, std::string> Esp32Camera::Explain(const std::string& question) {
     if (explain_url_.empty()) {
         return std::unexpected("Image explain URL or token is not set");
@@ -193,8 +225,10 @@ std::expected<std::string, std::string> Esp32Camera::Explain(const std::string& 
     // Start encoding thread
     encoder_thread_ = std::thread([this, jpeg_queue]() {
         int64_t start_time = esp_timer_get_time();
-        uint16_t w = current_fb_->width;
-        uint16_t h = current_fb_->height;
+        // Encode dimensions follow the (possibly rotated) encode buffer
+        const bool rotated_frame = current_fb_->format == PIXFORMAT_RGB565;
+        uint16_t w = rotated_frame && encode_w_ > 0 ? encode_w_ : current_fb_->width;
+        uint16_t h = rotated_frame && encode_h_ > 0 ? encode_h_ : current_fb_->height;
         v4l2_pix_fmt_t enc_fmt;
         switch (current_fb_->format) {
             case PIXFORMAT_RGB565:

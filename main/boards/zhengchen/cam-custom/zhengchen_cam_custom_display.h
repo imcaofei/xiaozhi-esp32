@@ -10,9 +10,11 @@
 
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <string>
 
 #include <esp_heap_caps.h>
+#include <esp_timer.h>
 
 /**
  * LCD display with a home-screen info line (date + weather) and a
@@ -111,9 +113,56 @@ public:
     bool IsWeatherPageShown() const { return weather_page_shown_; }
 
     /**
+     * Full-screen photo viewer. Replaces the upstream small chat-bubble
+     * preview: the photo is shown on a black full-screen overlay, scaled
+     * to fit, and auto-hidden after PHOTO_VIEW_SECONDS via the base-class
+     * preview timer (which calls this method with nullptr).
+     */
+    void SetPreviewImage(std::unique_ptr<LvglImage> image) override {
+        DisplayLockGuard lock(this);
+        if (image == nullptr) {
+            if (IsSetupUICalled()) {
+                HidePhotoLocked();
+            }
+            preview_image_cached_.reset();
+            return;
+        }
+        if (!IsSetupUICalled()) {
+            return;
+        }
+        preview_image_cached_ = std::move(image);
+        auto dsc = preview_image_cached_->image_dsc();
+        if (photo_bg_ == nullptr) {
+            CreatePhotoOverlayLocked();
+        }
+        if (photo_bg_ == nullptr || dsc == nullptr) {
+            return;
+        }
+        lv_image_set_src(photo_img_, dsc);
+        lv_image_set_pivot(photo_img_, dsc->header.w / 2, dsc->header.h / 2);
+        // Scale to fit the screen, never upscale beyond 100%
+        int scale_w = LV_HOR_RES * 256 / dsc->header.w;
+        int scale_h = LV_VER_RES * 256 / dsc->header.h;
+        int scale = scale_w < scale_h ? scale_w : scale_h;
+        if (scale > 256) {
+            scale = 256;
+        }
+        lv_image_set_scale(photo_img_, scale);
+        lv_obj_remove_flag(photo_bg_, LV_OBJ_FLAG_HIDDEN);
+        if (gif_controller_ != nullptr) {
+            gif_controller_->Stop();
+        }
+        lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
+        photo_visible_ = true;
+        esp_timer_stop(preview_timer_);
+        ESP_ERROR_CHECK(esp_timer_start_once(preview_timer_, PHOTO_VIEW_SECONDS * 1000ULL));
+    }
+
+    /**
      * Live camera preview: copy one RGB565 frame into a PSRAM buffer and
      * show it in a full-screen overlay. Called from the preview task;
-     * thread-safe. Frames are expected at panel resolution (QVGA).
+     * thread-safe. Frames are expected at panel resolution (QVGA);
+     * PREVIEW_ROTATION rotates them and the result is scaled to fit.
      */
     void ShowPreviewFrame(const void* data, size_t len, int width, int height) {
         if (!IsSetupUICalled() || data == nullptr) {
@@ -127,7 +176,10 @@ public:
             return;
         }
 
-        const size_t needed = static_cast<size_t>(width) * height * 2;
+        const bool rotated = (PREVIEW_ROTATION == 90 || PREVIEW_ROTATION == 270);
+        const int dst_w = rotated ? height : width;
+        const int dst_h = rotated ? width : height;
+        const size_t needed = static_cast<size_t>(dst_w) * dst_h * 2;
         if (preview_buf_ == nullptr || preview_buf_size_ < needed) {
             if (preview_buf_ != nullptr) {
                 heap_caps_free(preview_buf_);
@@ -142,26 +194,51 @@ public:
 
         const uint16_t* src = static_cast<const uint16_t*>(data);
         uint16_t* dst = reinterpret_cast<uint16_t*>(preview_buf_);
-        const size_t count = needed / 2;
         (void)len;
+        if (rotated) {
+            for (int y = 0; y < height; ++y) {
+                for (int x = 0; x < width; ++x) {
+                    uint16_t px = src[y * width + x];
 #if PREVIEW_SWAP_BYTES
-        for (size_t i = 0; i < count; ++i) {
-            dst[i] = __builtin_bswap16(src[i]);
-        }
-#else
-        memcpy(dst, src, needed);
+                    px = __builtin_bswap16(px);
 #endif
+                    if (PREVIEW_ROTATION == 90) {
+                        dst[(size_t)x * height + (height - 1 - y)] = px;  // 90° clockwise
+                    } else {
+                        dst[(size_t)(width - 1 - x) * height + y] = px;  // 270° clockwise
+                    }
+                }
+            }
+        } else {
+            const size_t count = needed / 2;
+#if PREVIEW_SWAP_BYTES
+            for (size_t i = 0; i < count; ++i) {
+                dst[i] = __builtin_bswap16(src[i]);
+            }
+#else
+            memcpy(dst, src, needed);
+#endif
+        }
 
-        if (preview_dsc_.header.w != width || preview_dsc_.header.h != height) {
+        if (preview_dsc_.header.w != dst_w || preview_dsc_.header.h != dst_h) {
             preview_dsc_ = {};
             preview_dsc_.header.magic = LV_IMAGE_HEADER_MAGIC;
             preview_dsc_.header.cf = LV_COLOR_FORMAT_RGB565;
-            preview_dsc_.header.w = width;
-            preview_dsc_.header.h = height;
+            preview_dsc_.header.w = dst_w;
+            preview_dsc_.header.h = dst_h;
             preview_dsc_.data_size = needed;
         }
         preview_dsc_.data = preview_buf_;
         lv_image_set_src(preview_img_, &preview_dsc_);
+        lv_image_set_pivot(preview_img_, dst_w / 2, dst_h / 2);
+        // Scale to fit the screen, never upscale beyond 100%
+        int scale_w = LV_HOR_RES * 256 / dst_w;
+        int scale_h = LV_VER_RES * 256 / dst_h;
+        int scale = scale_w < scale_h ? scale_w : scale_h;
+        if (scale > 256) {
+            scale = 256;
+        }
+        lv_image_set_scale(preview_img_, scale);
         lv_obj_clear_flag(preview_img_, LV_OBJ_FLAG_HIDDEN);
         preview_shown_ = true;
     }
@@ -206,6 +283,9 @@ private:
     size_t preview_buf_size_ = 0;
     lv_image_dsc_t preview_dsc_ = {};
     bool preview_shown_ = false;
+    lv_obj_t* photo_bg_ = nullptr;
+    lv_obj_t* photo_img_ = nullptr;
+    bool photo_visible_ = false;
     lv_obj_t* forecast_day_label_[kForecastDays] = {};
     lv_obj_t* forecast_cond_label_[kForecastDays] = {};
     lv_obj_t* forecast_temp_label_[kForecastDays] = {};
@@ -312,16 +392,42 @@ private:
     void CreatePreviewOverlayLocked() {
         preview_img_ = lv_image_create(lv_screen_active());
         lv_obj_center(preview_img_);
-        // Sensor frames are QVGA (320x240): exact match in landscape; rotate
-        // 90 degrees around the image center for portrait so it fills the
-        // 240x320 panel.
-        if (LV_HOR_RES < LV_VER_RES) {
-            lv_image_set_pivot(preview_img_, 160, 120);
-            lv_image_set_rotation(preview_img_, 900);  // 90.0 degrees
-        }
+        // Frame rotation/scaling is applied per-frame in ShowPreviewFrame().
         lv_obj_add_flag(preview_img_, LV_OBJ_FLAG_HIDDEN);
         if (low_battery_popup_ != nullptr) {
             lv_obj_move_foreground(low_battery_popup_);
+        }
+    }
+
+    /** Full-screen photo viewer (topmost, below global popups). */
+    void CreatePhotoOverlayLocked() {
+        photo_bg_ = lv_obj_create(lv_screen_active());
+        lv_obj_set_size(photo_bg_, LV_HOR_RES, LV_VER_RES);
+        lv_obj_align(photo_bg_, LV_ALIGN_TOP_MID, 0, 0);
+        lv_obj_set_style_radius(photo_bg_, 0, 0);
+        lv_obj_set_style_border_width(photo_bg_, 0, 0);
+        lv_obj_set_style_pad_all(photo_bg_, 0, 0);
+        lv_obj_set_style_bg_opa(photo_bg_, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(photo_bg_, lv_color_black(), 0);
+        lv_obj_clear_flag(photo_bg_, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(photo_bg_, LV_OBJ_FLAG_HIDDEN);
+        photo_img_ = lv_image_create(photo_bg_);
+        lv_obj_center(photo_img_);
+        if (low_battery_popup_ != nullptr) {
+            lv_obj_move_foreground(low_battery_popup_);
+        }
+    }
+
+    void HidePhotoLocked() {
+        if (photo_bg_ != nullptr) {
+            lv_obj_add_flag(photo_bg_, LV_OBJ_FLAG_HIDDEN);
+        }
+        photo_visible_ = false;
+        if (emoji_box_ != nullptr) {
+            lv_obj_remove_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
+        }
+        if (gif_controller_ != nullptr) {
+            gif_controller_->Start();
         }
     }
 
@@ -364,6 +470,11 @@ private:
         if (weather_page_ == nullptr) {
             return;
         }
+        if (photo_visible_) {
+            esp_timer_stop(preview_timer_);
+            HidePhotoLocked();
+            preview_image_cached_.reset();
+        }
         lv_obj_clear_flag(weather_page_, LV_OBJ_FLAG_HIDDEN);
         if (low_battery_popup_ != nullptr) {
             lv_obj_move_foreground(low_battery_popup_);
@@ -374,6 +485,11 @@ private:
     void ShowMainPageLocked() {
         if (weather_page_ == nullptr) {
             return;
+        }
+        if (photo_visible_) {
+            esp_timer_stop(preview_timer_);
+            HidePhotoLocked();
+            preview_image_cached_.reset();
         }
         lv_obj_add_flag(weather_page_, LV_OBJ_FLAG_HIDDEN);
         weather_page_shown_ = false;
