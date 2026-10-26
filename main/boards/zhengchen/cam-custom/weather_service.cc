@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
+#include <mutex>
 #include <string>
 
 #define TAG "WeatherService"
@@ -138,6 +139,58 @@ void WeatherService::Start() {
     }
 }
 
+bool WeatherService::GetLastWeather(WeatherInfo& out) {
+    std::lock_guard<std::mutex> lock(cache_mutex_);
+    if (!has_weather_) {
+        return false;
+    }
+    out = last_weather_;
+    return true;
+}
+
+bool WeatherService::GetLastForecast(ForecastInfo& out) {
+    std::lock_guard<std::mutex> lock(cache_mutex_);
+    if (!has_forecast_) {
+        return false;
+    }
+    out = last_forecast_;
+    return true;
+}
+
+int WeatherService::DayIndexFromName(const std::string& name) {
+    static const char* kRelative[] = {"昨天", "今天", "明天"};
+    for (int i = 0; i < 3; ++i) {
+        if (name == kRelative[i]) {
+            return i;
+        }
+    }
+    if (name == "后天") {
+        return 3;
+    }
+    if (name == "大后天") {
+        return 4;
+    }
+
+    // Weekday names: normalize "星期X" to "周X" (each CJK char is 3 bytes
+    // in UTF-8, so "星期" occupies 6 bytes) and match against the cached
+    // forecast labels.
+    std::string normalized = name;
+    size_t pos;
+    while ((pos = normalized.find("星期")) != std::string::npos) {
+        normalized.replace(pos, 6, "周");
+    }
+    std::lock_guard<std::mutex> lock(cache_mutex_);
+    if (!has_forecast_) {
+        return -1;
+    }
+    for (int i = 0; i < kForecastDays; ++i) {
+        if (last_forecast_.days[i].day_label == normalized) {
+            return i;
+        }
+    }
+    return -1;
+}
+
 void WeatherService::RequestUpdate() {
     if (task_handle_ != nullptr) {
         xTaskNotifyGive(reinterpret_cast<TaskHandle_t>(task_handle_));
@@ -167,6 +220,19 @@ void WeatherService::TaskLoop() {
         }
         if (ok && forecast_callback_ && forecast.valid) {
             forecast_callback_(forecast);
+        }
+
+        // Cache the latest results for synchronous consumers (MCP tools).
+        {
+            std::lock_guard<std::mutex> lock(cache_mutex_);
+            if (info.valid) {
+                last_weather_ = info;
+                has_weather_ = true;
+            }
+            if (forecast.valid) {
+                last_forecast_ = forecast;
+                has_forecast_ = true;
+            }
         }
 
         // RequestUpdate() can wake the task early (e.g. after reconnect).

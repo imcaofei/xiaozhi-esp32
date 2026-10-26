@@ -10,10 +10,16 @@
 
 static const char* TAG = "UiController";
 
+UiController* UiController::instance_ = nullptr;
+
 UiController::UiController(ZhengchenCamCustomDisplay* display) : display_(display) {
+    instance_ = this;
 }
 
 UiController::~UiController() {
+    if (instance_ == this) {
+        instance_ = nullptr;
+    }
     Stop();
 }
 
@@ -37,6 +43,41 @@ void UiController::Stop() {
     }
 }
 
+void UiController::RequestWeatherPage() {
+    if (display_ == nullptr) {
+        return;
+    }
+    ESP_LOGI(TAG, "manual request: weather page");
+    display_->ShowWeatherPage();
+    weather_page_shown_ = true;
+    // Keep the page through the current speaking turn; Poll() releases the
+    // hold once the device is idle again.
+    manual_hold_ = true;
+}
+
+void UiController::RequestMainPage() {
+    if (display_ == nullptr) {
+        return;
+    }
+    ESP_LOGI(TAG, "manual request: main page");
+    display_->ShowMainPage();
+    weather_page_shown_ = false;
+    // Don't let Poll() override the choice until the device is idle again.
+    manual_hold_ = true;
+}
+
+bool UiController::ShowPage(const std::string& page) {
+    if (page == "weather" || page == "天气") {
+        RequestWeatherPage();
+        return true;
+    }
+    if (page == "main" || page == "home" || page == "主页" || page == "对话") {
+        RequestMainPage();
+        return true;
+    }
+    return false;
+}
+
 void UiController::PollTimerCallback(void* arg) {
     static_cast<UiController*>(arg)->Poll();
 }
@@ -50,6 +91,13 @@ void UiController::Poll() {
     int64_t now = esp_timer_get_time();
 
     if (state == kDeviceStateIdle) {
+        if (manual_hold_) {
+            // The explicitly requested page survived the speaking turn;
+            // resume automatic behaviour from now on.
+            manual_hold_ = false;
+            idle_since_us_ = now;
+            return;
+        }
         if (idle_since_us_ < 0) {
             idle_since_us_ = now;
         }
@@ -61,7 +109,7 @@ void UiController::Poll() {
         }
     } else {
         idle_since_us_ = -1;
-        if (weather_page_shown_) {
+        if (weather_page_shown_ && !manual_hold_) {
             ESP_LOGI(TAG, "device active (%s), back to main page",
                      DeviceStateMachine::GetStateName(state));
             display_->ShowMainPage();
