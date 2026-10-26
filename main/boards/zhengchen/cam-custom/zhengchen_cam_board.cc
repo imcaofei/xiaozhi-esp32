@@ -1,6 +1,8 @@
 #include "wifi_board.h"
 #include "audio/codecs/box_audio_codec.h"
 #include "display/lcd_display.h"
+#include "zhengchen_cam_custom_display.h"
+#include "weather_service.h"
 #include "application.h"
 #include "button.h"
 #include "led/single_led.h"
@@ -11,6 +13,7 @@
 
 #include <esp_log.h>
 #include <esp_lcd_panel_vendor.h>
+#include <esp_timer.h>
 #include <driver/i2c_master.h>
 #include <driver/spi_common.h>
 #include <wifi_station.h>
@@ -18,6 +21,11 @@
 #include <esp_lvgl_port.h>
 #include <lvgl.h>
 #include "settings.h"
+
+#include <cstdio>
+#include <cstdlib>
+#include <ctime>
+#include <string>
 
 #define FIRST_BOOT_NS "boot_config"  
 #define FIRST_BOOT_KEY "is_first"    
@@ -84,6 +92,8 @@ private:
     Button volume_up_button_;
     Button volume_down_button_;
     LcdDisplay* display_ = nullptr;
+    ZhengchenCamCustomDisplay* custom_display_ = nullptr;
+    esp_timer_handle_t clock_timer_ = nullptr;
     Pca9557* pca9557_;
     Esp32Camera* camera_;
     PowerManager* power_manager_ = new PowerManager(GPIO_NUM_47);
@@ -224,17 +234,74 @@ private:
             // 横屏模式
             esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY);
             esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
-            display_ = new SpiLcdDisplay(panel_io, panel,
+            custom_display_ = new ZhengchenCamCustomDisplay(panel_io, panel,
                                         DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
 
         } else {
             // 竖屏模式
             esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY_1);
             esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X_1, DISPLAY_MIRROR_Y_1);
-            display_ = new SpiLcdDisplay(panel_io, panel,
+            custom_display_ = new ZhengchenCamCustomDisplay(panel_io, panel,
                                         DISPLAY_WIDTH_1, DISPLAY_HEIGHT_1, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X_1, DISPLAY_MIRROR_Y_1, DISPLAY_SWAP_XY_1);
         }
+        display_ = custom_display_;
         
+    }
+
+    /* Home screen info line: date (+ weekday) and current weather. */
+    void UpdateDateLabel() {
+        if (custom_display_ == nullptr) {
+            return;
+        }
+
+        time_t now = time(nullptr);
+        struct tm tm_now = {};
+        localtime_r(&now, &tm_now);
+        if (tm_now.tm_year < 2025 - 1900) {
+            // System time not synced yet; keep the label empty.
+            custom_display_->UpdateDateTime("");
+            return;
+        }
+
+        static const char* kWeekdays[] = {"周日", "周一", "周二", "周三",
+                                          "周四", "周五", "周六"};
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%02d-%02d %s", tm_now.tm_mon + 1, tm_now.tm_mday,
+                 kWeekdays[tm_now.tm_wday % 7]);
+        custom_display_->UpdateDateTime(buf);
+    }
+
+    static void ClockTimerCallback(void* arg) {
+        static_cast<ZhengchenCamBoard*>(arg)->UpdateDateLabel();
+    }
+
+    void InitializeDateTimeWeather() {
+        setenv("TZ", BOARD_TIMEZONE, 1);
+        tzset();
+
+        esp_timer_create_args_t timer_args = {};
+        timer_args.callback = ClockTimerCallback;
+        timer_args.arg = this;
+        timer_args.name = "date_label";
+        if (esp_timer_create(&timer_args, &clock_timer_) == ESP_OK) {
+            ESP_ERROR_CHECK(esp_timer_start_periodic(clock_timer_, DATE_CLOCK_UPDATE_INTERVAL_MS * 1000ULL));
+        }
+        UpdateDateLabel();
+
+        auto& weather = WeatherService::GetInstance();
+        weather.SetCallback([this](const WeatherService::WeatherInfo& info) {
+            if (custom_display_ == nullptr) {
+                return;
+            }
+            if (!info.valid) {
+                custom_display_->UpdateWeather("");
+                return;
+            }
+            char buf[48];
+            snprintf(buf, sizeof(buf), "%s %d°", info.condition.c_str(), info.temperature);
+            custom_display_->UpdateWeather(buf);
+        });
+        weather.Start();
     }
 
     void InitializeCamera() {
@@ -285,6 +352,7 @@ public:
         InitializeButtons();
         InitializeCamera();
 		InitializeController();
+        InitializeDateTimeWeather();
         GetBacklight()->RestoreBrightness();
     }
 

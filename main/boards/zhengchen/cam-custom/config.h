@@ -65,4 +65,13 @@
 
 #define XCLK_FREQ_HZ 24000000
 
+/* Home screen info (date + weather) */
+#define BOARD_TIMEZONE          "CST-8"      // UTC+8
+#define BOARD_CITY_NAME         "杭州"
+#define WEATHER_LATITUDE        "30.27"
+#define WEATHER_LONGITUDE       "120.16"
+#define WEATHER_UPDATE_INTERVAL_MS (30 * 60 * 1000)  // refresh weather every 30 minutes
+#define WEATHER_RETRY_INTERVAL_MS  (60 * 1000)       // retry after 1 minute on failure
+#define DATE_CLOCK_UPDATE_INTERVAL_MS (30 * 1000)    // refresh date label every 30 seconds
+
 #endif // _BOARD_CONFIG_H_
