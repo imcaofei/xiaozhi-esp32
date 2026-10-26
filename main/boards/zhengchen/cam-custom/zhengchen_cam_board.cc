@@ -303,6 +303,16 @@ private:
             snprintf(buf, sizeof(buf), "%s %d°", info.condition.c_str(), info.temperature);
             custom_display_->UpdateWeather(buf);
         });
+        weather.SetForecastCallback([this](const WeatherService::ForecastInfo& forecast) {
+            if (custom_display_ == nullptr) {
+                return;
+            }
+            for (int i = 0; i < WeatherService::kForecastDays; ++i) {
+                custom_display_->UpdateForecastItem(i, forecast.days[i].day_label,
+                                                    forecast.days[i].condition,
+                                                    forecast.days[i].temps);
+            }
+        });
         weather.Start();
 
         // Page switching: idle -> weather page, conversation -> main page.

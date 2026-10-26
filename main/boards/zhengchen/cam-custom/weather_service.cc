@@ -12,6 +12,8 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <ctime>
 #include <string>
 
 #define TAG "WeatherService"
@@ -21,7 +23,10 @@ namespace {
 constexpr const char* kApiUrl =
     "https://api.open-meteo.com/v1/forecast"
     "?latitude=" WEATHER_LATITUDE "&longitude=" WEATHER_LONGITUDE
-    "&current=temperature_2m,weather_code&timezone=Asia%2FShanghai";
+    "&current=temperature_2m,weather_code"
+    "&daily=weather_code,temperature_2m_max,temperature_2m_min"
+    "&past_days=1&forecast_days=6"
+    "&timezone=Asia%2FShanghai";
 
 // Map WMO weather codes to short Chinese descriptions.
 const char* ConditionFromCode(int code) {
@@ -29,7 +34,7 @@ const char* ConditionFromCode(int code) {
         case 0:
             return "晴";
         case 1:
-            return "晴间多云";
+            return "少云";
         case 2:
             return "多云";
         case 3:
@@ -75,10 +80,34 @@ const char* ConditionFromCode(int code) {
             return "雷阵雨";
         case 96:
         case 99:
-            return "雷阵雨伴冰雹";
+            return "冰雹";
         default:
             return "未知";
     }
+}
+
+// Label for one daily entry: relative names for the near days, the weekday
+// name for the rest. date is "YYYY-MM-DD" in local time (Open-Meteo).
+std::string DayLabel(int index, const char* date) {
+    static const char* kRelative[] = {"昨天", "今天", "明天"};
+    if (index >= 0 && index < 3) {
+        return kRelative[index];
+    }
+
+    int y = 0, m = 0, d = 0;
+    if (sscanf(date, "%d-%d-%d", &y, &m, &d) != 3) {
+        return "--";
+    }
+    std::tm tm_value = {};
+    tm_value.tm_year = y - 1900;
+    tm_value.tm_mon = m - 1;
+    tm_value.tm_mday = d;
+    if (mktime(&tm_value) < 0) {
+        return "--";
+    }
+    static const char* kWeekdays[] = {"周日", "周一", "周二", "周三",
+                                      "周四", "周五", "周六"};
+    return kWeekdays[tm_value.tm_wday % 7];
 }
 
 }  // namespace
@@ -90,6 +119,10 @@ WeatherService& WeatherService::GetInstance() {
 
 void WeatherService::SetCallback(Callback callback) {
     callback_ = std::move(callback);
+}
+
+void WeatherService::SetForecastCallback(ForecastCallback callback) {
+    forecast_callback_ = std::move(callback);
 }
 
 void WeatherService::Start() {
@@ -119,15 +152,21 @@ void WeatherService::TaskEntry(void* arg) {
 void WeatherService::TaskLoop() {
     while (true) {
         WeatherInfo info;
-        const bool ok = Fetch(info);
+        ForecastInfo forecast;
+        const bool ok = Fetch(info, forecast);
         if (ok) {
-            ESP_LOGI(TAG, "Weather: %s %d°C", info.condition.c_str(), info.temperature);
+            ESP_LOGI(TAG, "Weather: %s %d°C, forecast %s",
+                     info.condition.c_str(), info.temperature,
+                     forecast.valid ? "updated" : "unavailable");
         } else {
             ESP_LOGW(TAG, "Failed to fetch weather");
         }
 
         if (callback_) {
             callback_(info);
+        }
+        if (ok && forecast_callback_ && forecast.valid) {
+            forecast_callback_(forecast);
         }
 
         // RequestUpdate() can wake the task early (e.g. after reconnect).
@@ -136,7 +175,7 @@ void WeatherService::TaskLoop() {
     }
 }
 
-bool WeatherService::Fetch(WeatherInfo& info) {
+bool WeatherService::Fetch(WeatherInfo& info, ForecastInfo& forecast) {
     NetworkInterface* network = Board::GetInstance().GetNetwork();
     if (network == nullptr) {
         ESP_LOGW(TAG, "No network interface available");
@@ -184,6 +223,43 @@ bool WeatherService::Fetch(WeatherInfo& info) {
             info.temperature = static_cast<int>(std::lround(temperature->valuedouble));
             info.condition = ConditionFromCode(weather_code->valueint);
             ok = true;
+        }
+    }
+
+    // Daily forecast: past_days=1 + forecast_days=6 => 7 entries starting
+    // with yesterday. Entries beyond the array size are ignored.
+    const cJSON* daily = cJSON_GetObjectItem(root, "daily");
+    const cJSON* daily_time = daily ? cJSON_GetObjectItem(daily, "time") : nullptr;
+    const cJSON* daily_code = daily ? cJSON_GetObjectItem(daily, "weather_code") : nullptr;
+    const cJSON* daily_tmax = daily ? cJSON_GetObjectItem(daily, "temperature_2m_max") : nullptr;
+    const cJSON* daily_tmin = daily ? cJSON_GetObjectItem(daily, "temperature_2m_min") : nullptr;
+    if (daily_time != nullptr && daily_code != nullptr && daily_tmax != nullptr &&
+        daily_tmin != nullptr && cJSON_IsArray(daily_time)) {
+        const int count = cJSON_GetArraySize(daily_time);
+        int filled = 0;
+        for (int i = 0; i < count && filled < kForecastDays; ++i) {
+            const cJSON* time_item = cJSON_GetArrayItem(daily_time, i);
+            const cJSON* code_item = cJSON_GetArrayItem(daily_code, i);
+            const cJSON* tmax_item = cJSON_GetArrayItem(daily_tmax, i);
+            const cJSON* tmin_item = cJSON_GetArrayItem(daily_tmin, i);
+            if (!cJSON_IsString(time_item) || !cJSON_IsNumber(code_item) ||
+                !cJSON_IsNumber(tmax_item) || !cJSON_IsNumber(tmin_item)) {
+                continue;
+            }
+            ForecastDay& day = forecast.days[filled];
+            day.day_label = DayLabel(filled, time_item->valuestring);
+            day.condition = ConditionFromCode(code_item->valueint);
+            char temps[24];
+            snprintf(temps, sizeof(temps), "%d°/%d°",
+                     static_cast<int>(std::lround(tmin_item->valuedouble)),
+                     static_cast<int>(std::lround(tmax_item->valuedouble)));
+            day.temps = temps;
+            ++filled;
+        }
+        if (filled == kForecastDays) {
+            forecast.valid = true;
+        } else {
+            ESP_LOGW(TAG, "Incomplete daily forecast: %d/%d entries", filled, kForecastDays);
         }
     }
 

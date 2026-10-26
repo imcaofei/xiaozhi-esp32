@@ -16,9 +16,9 @@
  *
  * The info line sits just below the top status bar, left aligned. The
  * weather page is a full-screen overlay created on the same LVGL screen
- * (hidden by default); showing it covers the emoji / chat areas but keeps
- * the top bar (clock, wifi, battery) visible. Global popups such as the
- * low-battery warning are kept above the overlay.
+ * (hidden by default); showing it covers the emoji / chat areas and the
+ * top bar. Global popups such as the low-battery warning are kept above
+ * the overlay.
  *
  * All public methods are thread-safe: they take the LVGL lock.
  */
@@ -107,9 +107,11 @@ public:
     bool IsWeatherPageShown() const { return weather_page_shown_; }
 
     /**
-     * Fill one forecast row. index: 0 = today, 1 = tomorrow, 2 = day after.
-     * Calls made before SetupUI() are dropped and the row stays as a
-     * placeholder.
+     * Fill one forecast column. index: 0 = yesterday, 1 = today, 2..: the
+     * following days. Day and condition texts are rendered vertically
+     * (one character per line); temps are split into high/low stacked
+     * lines. Calls made before SetupUI() are dropped and the column stays
+     * as a placeholder.
      */
     void UpdateForecastItem(int index, const std::string& day,
                             const std::string& condition, const std::string& temps) {
@@ -120,13 +122,13 @@ public:
         if (forecast_day_label_[index] == nullptr) {
             return;
         }
-        lv_label_set_text(forecast_day_label_[index], day.c_str());
-        lv_label_set_text(forecast_cond_label_[index], condition.c_str());
-        lv_label_set_text(forecast_temp_label_[index], temps.c_str());
+        lv_label_set_text(forecast_day_label_[index], VerticalText(day).c_str());
+        lv_label_set_text(forecast_cond_label_[index], VerticalText(condition).c_str());
+        lv_label_set_text(forecast_temp_label_[index], StackedTemps(temps).c_str());
     }
 
 private:
-    static constexpr int kForecastDays = 3;
+    static constexpr int kForecastDays = WEATHER_FORECAST_DAYS;
 
     lv_obj_t* info_label_ = nullptr;
     lv_obj_t* weather_page_ = nullptr;
@@ -161,11 +163,10 @@ private:
 
     void CreateWeatherPage() {
         auto* theme = static_cast<LvglTheme*>(current_theme_);
-        const int top_h = TopBarBottom();
 
         weather_page_ = lv_obj_create(lv_screen_active());
-        lv_obj_set_size(weather_page_, LV_HOR_RES, LV_VER_RES - top_h);
-        lv_obj_align(weather_page_, LV_ALIGN_TOP_MID, 0, top_h);
+        lv_obj_set_size(weather_page_, LV_HOR_RES, LV_VER_RES);
+        lv_obj_align(weather_page_, LV_ALIGN_TOP_MID, 0, 0);
         lv_obj_set_style_radius(weather_page_, 0, 0);
         lv_obj_set_style_border_width(weather_page_, 0, 0);
         lv_obj_set_style_pad_all(weather_page_, 0, 0);
@@ -177,41 +178,53 @@ private:
         lv_obj_clear_flag(weather_page_, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(weather_page_, LV_OBJ_FLAG_HIDDEN);
 
+        // Column layout: title on top, then one vertical strip per day.
         lv_obj_set_flex_flow(weather_page_, LV_FLEX_FLOW_COLUMN);
-        lv_obj_set_style_pad_left(weather_page_, 8, 0);
-        lv_obj_set_style_pad_right(weather_page_, 8, 0);
-        lv_obj_set_style_pad_top(weather_page_, 6, 0);
-        lv_obj_set_style_pad_row(weather_page_, theme != nullptr ? theme->spacing(2) : 4, 0);
+        lv_obj_set_style_pad_left(weather_page_, 4, 0);
+        lv_obj_set_style_pad_right(weather_page_, 4, 0);
+        lv_obj_set_style_pad_top(weather_page_, 4, 0);
+        lv_obj_set_style_pad_bottom(weather_page_, 2, 0);
+        lv_obj_set_style_pad_row(weather_page_, 2, 0);
 
         lv_obj_t* title = lv_label_create(weather_page_);
         lv_label_set_text(title, BOARD_CITY_NAME " · 天气预报");
 
-        static const char* kDayNames[kForecastDays] = {"今天", "明天", "后天"};
+        lv_obj_t* columns = lv_obj_create(weather_page_);
+        lv_obj_set_width(columns, LV_PCT(100));
+        lv_obj_set_flex_grow(columns, 1);
+        lv_obj_set_style_radius(columns, 0, 0);
+        lv_obj_set_style_border_width(columns, 0, 0);
+        lv_obj_set_style_pad_all(columns, 0, 0);
+        lv_obj_set_style_bg_opa(columns, LV_OPA_TRANSP, 0);
+        lv_obj_clear_flag(columns, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_flex_flow(columns, LV_FLEX_FLOW_ROW);
+
         for (int i = 0; i < kForecastDays; ++i) {
-            lv_obj_t* row = lv_obj_create(weather_page_);
-            lv_obj_set_size(row, LV_PCT(100), 52);
-            lv_obj_set_style_radius(row, 0, 0);
-            lv_obj_set_style_pad_all(row, 0, 0);
-            lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
-            lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_t* col = lv_obj_create(columns);
+            lv_obj_set_height(col, LV_PCT(100));
+            lv_obj_set_flex_grow(col, 1);
+            lv_obj_set_style_radius(col, 0, 0);
+            lv_obj_set_style_pad_all(col, 0, 0);
+            lv_obj_set_style_bg_opa(col, LV_OPA_TRANSP, 0);
+            lv_obj_clear_flag(col, LV_OBJ_FLAG_SCROLLABLE);
             if (i < kForecastDays - 1 && theme != nullptr) {
-                lv_obj_set_style_border_width(row, 1, 0);
-                lv_obj_set_style_border_side(row, LV_BORDER_SIDE_BOTTOM, 0);
-                lv_obj_set_style_border_color(row, theme->border_color(), 0);
+                lv_obj_set_style_border_width(col, 1, 0);
+                lv_obj_set_style_border_side(col, LV_BORDER_SIDE_RIGHT, 0);
+                lv_obj_set_style_border_color(col, theme->border_color(), 0);
             }
 
-            lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-            lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+            lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_flex_align(col, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
                                   LV_FLEX_ALIGN_CENTER);
 
-            forecast_day_label_[i] = lv_label_create(row);
-            lv_label_set_text(forecast_day_label_[i], kDayNames[i]);
+            forecast_day_label_[i] = lv_label_create(col);
+            lv_label_set_text(forecast_day_label_[i], "--");
 
-            forecast_cond_label_[i] = lv_label_create(row);
+            forecast_cond_label_[i] = lv_label_create(col);
             lv_label_set_text(forecast_cond_label_[i], "--");
 
-            forecast_temp_label_[i] = lv_label_create(row);
-            lv_label_set_text(forecast_temp_label_[i], "--° / --°");
+            forecast_temp_label_[i] = lv_label_create(col);
+            lv_label_set_text(forecast_temp_label_[i], "--°");
         }
 
         // The overlay is created last so it is topmost; raise global popups
@@ -219,6 +232,41 @@ private:
         if (low_battery_popup_ != nullptr) {
             lv_obj_move_foreground(low_battery_popup_);
         }
+    }
+
+    /**
+     * Insert a newline between UTF-8 characters so an LVGL label renders
+     * the text vertically ("多云" -> "多\n云"). ASCII passes through.
+     */
+    static std::string VerticalText(const std::string& text) {
+        std::string out;
+        size_t i = 0;
+        while (i < text.size()) {
+            unsigned char c = static_cast<unsigned char>(text[i]);
+            size_t len = 1;
+            if ((c & 0xE0) == 0xC0) {
+                len = 2;
+            } else if ((c & 0xF0) == 0xE0) {
+                len = 3;
+            } else if ((c & 0xF8) == 0xF0) {
+                len = 4;
+            }
+            if (i > 0) {
+                out += '\n';
+            }
+            out.append(text, i, len);
+            i += len;
+        }
+        return out;
+    }
+
+    /** "14°/26°" (min/max) -> "26°\n14°" with the high temperature on top. */
+    static std::string StackedTemps(const std::string& temps) {
+        const size_t slash = temps.find('/');
+        if (slash == std::string::npos) {
+            return temps;
+        }
+        return temps.substr(slash + 1) + "\n" + temps.substr(0, slash);
     }
 
     void ShowWeatherPageLocked() {

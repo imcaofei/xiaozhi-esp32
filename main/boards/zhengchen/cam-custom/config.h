@@ -72,6 +72,7 @@
 #define WEATHER_LONGITUDE       "120.16"
 #define WEATHER_UPDATE_INTERVAL_MS (30 * 60 * 1000)  // refresh weather every 30 minutes
 #define WEATHER_RETRY_INTERVAL_MS  (60 * 1000)       // retry after 1 minute on failure
+#define WEATHER_FORECAST_DAYS      7                 // yesterday + today + next 5 days
 #define DATE_CLOCK_UPDATE_INTERVAL_MS (30 * 1000)    // refresh date label every 30 seconds
 
 /* Page switching (main chat page <-> weather page) */
