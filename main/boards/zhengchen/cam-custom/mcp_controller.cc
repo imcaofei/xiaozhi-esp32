@@ -12,6 +12,8 @@
 #include "display.h"
 #include "ui_controller.h"
 #include "weather_service.h"
+#include "camera_preview.h"
+#include "zhengchen_cam_custom_display.h"
 
 #define TAG "MCPController"
 
@@ -168,6 +170,32 @@ public:
                      info.day_label.c_str(), info.condition.c_str(),
                      temps_min.c_str(), temps_max.c_str());
             return buf;
+        }
+    );
+
+    mcp_server.AddTool(
+        "self.camera.preview",
+        "打开或关闭屏幕上的实时监控画面（摄像头取景器）。当用户想实时查看摄像头画面时使用，例如\"打开监控画面\"\"让我看看镜头前是什么\"\"打开实时画面\"；当用户要求关闭监控画面时传`off`。\n"
+        "参数：\n"
+        "   `action`: 可选值为`on`（打开实时画面）和`off`（关闭实时画面）\n"
+        "返回值：\n"
+        "   反馈操作结果，不需要确认，立即播报相关数据\n",
+        PropertyList({
+            Property("action", kPropertyTypeString)
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            auto action = properties["action"].value<std::string>();
+            auto& preview = CameraPreview::GetInstance();
+            if (action == "on" || action == "open") {
+                auto* display = static_cast<ZhengchenCamCustomDisplay*>(
+                    Board::GetInstance().GetDisplay());
+                if (preview.Start(display)) {
+                    return "{\"success\": true, \"message\": \"监控画面已打开，屏幕上正在显示摄像头实时画面，观看完请告诉我关闭\"}";
+                }
+                return "{\"success\": false, \"message\": \"监控画面打开失败，请稍后再试\"}";
+            }
+            preview.Stop();
+            return "{\"success\": true, \"message\": \"监控画面已关闭\"}";
         }
     );
 

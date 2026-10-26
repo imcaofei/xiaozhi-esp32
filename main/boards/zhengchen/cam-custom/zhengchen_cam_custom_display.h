@@ -8,7 +8,11 @@
 
 #include <lvgl.h>
 
+#include <cstdint>
+#include <cstring>
 #include <string>
+
+#include <esp_heap_caps.h>
 
 /**
  * LCD display with a home-screen info line (date + weather) and a
@@ -107,6 +111,71 @@ public:
     bool IsWeatherPageShown() const { return weather_page_shown_; }
 
     /**
+     * Live camera preview: copy one RGB565 frame into a PSRAM buffer and
+     * show it in a full-screen overlay. Called from the preview task;
+     * thread-safe. Frames are expected at panel resolution (QVGA).
+     */
+    void ShowPreviewFrame(const void* data, size_t len, int width, int height) {
+        if (!IsSetupUICalled() || data == nullptr) {
+            return;
+        }
+        DisplayLockGuard lock(this);
+        if (preview_img_ == nullptr) {
+            CreatePreviewOverlayLocked();
+        }
+        if (preview_img_ == nullptr) {
+            return;
+        }
+
+        const size_t needed = static_cast<size_t>(width) * height * 2;
+        if (preview_buf_ == nullptr || preview_buf_size_ < needed) {
+            if (preview_buf_ != nullptr) {
+                heap_caps_free(preview_buf_);
+            }
+            preview_buf_ = static_cast<uint8_t*>(heap_caps_malloc(needed, MALLOC_CAP_SPIRAM));
+            preview_buf_size_ = preview_buf_ != nullptr ? needed : 0;
+            if (preview_buf_ == nullptr) {
+                ESP_LOGE("CamCustomDisplay", "preview buffer alloc failed");
+                return;
+            }
+        }
+
+        const uint16_t* src = static_cast<const uint16_t*>(data);
+        uint16_t* dst = reinterpret_cast<uint16_t*>(preview_buf_);
+        const size_t count = needed / 2;
+        (void)len;
+#if PREVIEW_SWAP_BYTES
+        for (size_t i = 0; i < count; ++i) {
+            dst[i] = __builtin_bswap16(src[i]);
+        }
+#else
+        memcpy(dst, src, needed);
+#endif
+
+        if (preview_dsc_.header.w != width || preview_dsc_.header.h != height) {
+            preview_dsc_ = {};
+            preview_dsc_.header.magic = LV_IMAGE_HEADER_MAGIC;
+            preview_dsc_.header.cf = LV_COLOR_FORMAT_RGB565;
+            preview_dsc_.header.w = width;
+            preview_dsc_.header.h = height;
+            preview_dsc_.data_size = needed;
+        }
+        preview_dsc_.data = preview_buf_;
+        lv_image_set_src(preview_img_, &preview_dsc_);
+        lv_obj_clear_flag(preview_img_, LV_OBJ_FLAG_HIDDEN);
+        preview_shown_ = true;
+    }
+
+    /** Close the live preview overlay. */
+    void HidePreview() {
+        DisplayLockGuard lock(this);
+        if (preview_img_ != nullptr) {
+            lv_obj_add_flag(preview_img_, LV_OBJ_FLAG_HIDDEN);
+        }
+        preview_shown_ = false;
+    }
+
+    /**
      * Fill one forecast column. index: 0 = yesterday, 1 = today, 2..: the
      * following days. Day and condition texts are rendered vertically
      * (one character per line); temps are split into high/low stacked
@@ -132,6 +201,11 @@ private:
 
     lv_obj_t* info_label_ = nullptr;
     lv_obj_t* weather_page_ = nullptr;
+    lv_obj_t* preview_img_ = nullptr;
+    uint8_t* preview_buf_ = nullptr;
+    size_t preview_buf_size_ = 0;
+    lv_image_dsc_t preview_dsc_ = {};
+    bool preview_shown_ = false;
     lv_obj_t* forecast_day_label_[kForecastDays] = {};
     lv_obj_t* forecast_cond_label_[kForecastDays] = {};
     lv_obj_t* forecast_temp_label_[kForecastDays] = {};
@@ -229,6 +303,23 @@ private:
 
         // The overlay is created last so it is topmost; raise global popups
         // (e.g. low battery) back above it.
+        if (low_battery_popup_ != nullptr) {
+            lv_obj_move_foreground(low_battery_popup_);
+        }
+    }
+
+    /** Full-screen live camera overlay (topmost, below global popups). */
+    void CreatePreviewOverlayLocked() {
+        preview_img_ = lv_image_create(lv_screen_active());
+        lv_obj_center(preview_img_);
+        // Sensor frames are QVGA (320x240): exact match in landscape; rotate
+        // 90 degrees around the image center for portrait so it fills the
+        // 240x320 panel.
+        if (LV_HOR_RES < LV_VER_RES) {
+            lv_image_set_pivot(preview_img_, 160, 120);
+            lv_image_set_rotation(preview_img_, 900);  // 90.0 degrees
+        }
+        lv_obj_add_flag(preview_img_, LV_OBJ_FLAG_HIDDEN);
         if (low_battery_popup_ != nullptr) {
             lv_obj_move_foreground(low_battery_popup_);
         }

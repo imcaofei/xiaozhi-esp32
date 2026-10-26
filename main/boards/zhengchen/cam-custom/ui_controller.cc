@@ -1,6 +1,7 @@
 #include "ui_controller.h"
 
 #include "zhengchen_cam_custom_display.h"
+#include "camera_preview.h"
 #include "application.h"
 #include "config.h"
 #include "device_state.h"
@@ -60,6 +61,8 @@ void UiController::RequestMainPage() {
         return;
     }
     ESP_LOGI(TAG, "manual request: main page");
+    // Returning to the main page also closes a running live preview.
+    CameraPreview::GetInstance().Stop();
     display_->ShowMainPage();
     weather_page_shown_ = false;
     // Don't let Poll() override the choice until the device is idle again.

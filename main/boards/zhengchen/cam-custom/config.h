@@ -79,4 +79,9 @@
 #define UI_PAGE_POLL_INTERVAL_MS      (1000)         // poll device state every 1 second
 #define UI_IDLE_SHOW_WEATHER_AFTER_MS (30 * 1000)    // show weather page after 30 s of idle
 
+/* Camera live preview on the LCD */
+#define PREVIEW_FPS_CAP         15                    // upper bound, paced by the sensor anyway
+#define PREVIEW_SWAP_BYTES      0                     // set to 1 if colors look wrong on the panel
+#define PREVIEW_AUTO_STOP_MS    (5 * 60 * 1000)       // auto stop preview after 5 minutes
+
 #endif // _BOARD_CONFIG_H_
