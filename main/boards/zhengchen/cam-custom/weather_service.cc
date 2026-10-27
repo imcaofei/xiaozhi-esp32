@@ -7,6 +7,7 @@
 
 #include <cJSON.h>
 #include <esp_log.h>
+#include <esp_netif.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -28,6 +29,21 @@ constexpr const char* kApiUrl =
     "&daily=weather_code,temperature_2m_max,temperature_2m_min"
     "&past_days=1&forecast_days=6"
     "&timezone=Asia%2FShanghai";
+
+// 网络栈是否已可用（esp_netif 初始化 + 已拿到 IP）。
+// 天气任务在板子构造阶段就会启动，此时 lwIP 的 tcpip 线程尚未创建，
+// 直接发起 HTTPS 会命中 "tcpip_send_msg_wait_sem: Invalid mbox" 断言并复位。
+bool NetworkReady() {
+    esp_netif_t* netif = esp_netif_get_default_netif();
+    if (netif == nullptr) {
+        return false;
+    }
+    esp_netif_ip_info_t ip_info = {};
+    if (esp_netif_get_ip_info(netif, &ip_info) != ESP_OK) {
+        return false;
+    }
+    return ip_info.ip.addr != 0;
+}
 
 // Map WMO weather codes to short Chinese descriptions.
 const char* ConditionFromCode(int code) {
@@ -203,7 +219,20 @@ void WeatherService::TaskEntry(void* arg) {
 }
 
 void WeatherService::TaskLoop() {
+    bool network_wait_logged = false;
     while (true) {
+        // 等网络就绪再发请求：构造阶段 esp_netif/lwIP 尚未初始化，
+        // 提前请求会触发 lwIP 断言导致反复重启。
+        if (!NetworkReady()) {
+            if (!network_wait_logged) {
+                ESP_LOGI(TAG, "Waiting for network before fetching weather");
+                network_wait_logged = true;
+            }
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
+            continue;
+        }
+        network_wait_logged = false;
+
         WeatherInfo info;
         ForecastInfo forecast;
         const bool ok = Fetch(info, forecast);
