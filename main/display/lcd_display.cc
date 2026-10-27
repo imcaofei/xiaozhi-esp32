@@ -25,6 +25,28 @@ LV_FONT_DECLARE(BUILTIN_ICON_FONT);
 LV_FONT_DECLARE(font_material_symbols_30_4);
 LV_FONT_DECLARE(font_noto_emoji_30_4);
 
+#if CONFIG_BOARD_TYPE_ZHENGCHEN_CAM_CUSTOM
+// cam-custom: 表情资源是 240x240 的 GIF，而屏幕是 320x240。
+// 默认按原始尺寸居中会左右各留 40px 黑边（看起来"没有全屏"），
+// 这里按"铺满并居中裁切"缩放到覆盖整屏。
+static void ApplyEmojiCoverScale(lv_obj_t* img, const lv_image_dsc_t* dsc) {
+    if (img == nullptr || dsc == nullptr) {
+        return;
+    }
+    const uint32_t w = dsc->header.w;
+    const uint32_t h = dsc->header.h;
+    if (w == 0 || h == 0) {
+        return;
+    }
+    const uint32_t scale_x = (LV_HOR_RES * 256 + w - 1) / w;
+    const uint32_t scale_y = (LV_VER_RES * 256 + h - 1) / h;
+    const uint32_t scale = scale_x > scale_y ? scale_x : scale_y;
+    if (scale != 256 && lv_image_get_scale(img) != static_cast<int32_t>(scale)) {
+        lv_image_set_scale(img, scale);
+    }
+}
+#endif
+
 void LcdDisplay::InitializeLcdThemes() {
     auto text_font = std::make_shared<LvglBuiltInFont>(&BUILTIN_TEXT_FONT);
     auto icon_font = std::make_shared<LvglBuiltInFont>(&BUILTIN_ICON_FONT);
@@ -913,7 +935,12 @@ void LcdDisplay::SetupUI() {
 
     /* Bottom layer: emoji_box_ - centered display */
     emoji_box_ = lv_obj_create(screen);
+#if CONFIG_BOARD_TYPE_ZHENGCHEN_CAM_CUSTOM
+    // cam-custom: 容器取整屏尺寸，放大后的表情超出部分由容器裁掉
+    lv_obj_set_size(emoji_box_, LV_HOR_RES, LV_VER_RES);
+#else
     lv_obj_set_size(emoji_box_, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+#endif
     lv_obj_set_style_bg_opa(emoji_box_, LV_OPA_TRANSP, 0);
     lv_obj_set_style_pad_all(emoji_box_, 0, 0);
     lv_obj_set_style_border_width(emoji_box_, 0, 0);
@@ -923,6 +950,7 @@ void LcdDisplay::SetupUI() {
     lv_obj_set_style_text_font(emoji_label_, large_icon_font, 0);
     lv_obj_set_style_text_color(emoji_label_, lvgl_theme->text_color(), 0);
     lv_label_set_text(emoji_label_, MATERIAL_SYMBOLS_ROBOT_2);
+    lv_obj_center(emoji_label_);
 
     emoji_image_ = lv_img_create(emoji_box_);
     lv_obj_center(emoji_image_);
@@ -1232,11 +1260,19 @@ bool LcdDisplay::SetEmotion(const char* emotion) {
 
         if (gif_controller_->IsLoaded()) {
             // Set up frame update callback
-            gif_controller_->SetFrameCallback(
-                [this]() { lv_image_set_src(emoji_image_, gif_controller_->image_dsc()); });
+            gif_controller_->SetFrameCallback([this]() {
+                lv_image_set_src(emoji_image_, gif_controller_->image_dsc());
+#if CONFIG_BOARD_TYPE_ZHENGCHEN_CAM_CUSTOM
+                // 首帧解码后才拿得到真实尺寸，这里按需补一次缩放
+                ApplyEmojiCoverScale(emoji_image_, gif_controller_->image_dsc());
+#endif
+            });
 
             // Set initial frame and start animation
             lv_image_set_src(emoji_image_, gif_controller_->image_dsc());
+#if CONFIG_BOARD_TYPE_ZHENGCHEN_CAM_CUSTOM
+            ApplyEmojiCoverScale(emoji_image_, gif_controller_->image_dsc());
+#endif
             gif_controller_->Start();
 
             // Show GIF, hide others
@@ -1251,6 +1287,9 @@ bool LcdDisplay::SetEmotion(const char* emotion) {
         }
     } else {
         lv_image_set_src(emoji_image_, image->image_dsc());
+#if CONFIG_BOARD_TYPE_ZHENGCHEN_CAM_CUSTOM
+        ApplyEmojiCoverScale(emoji_image_, image->image_dsc());
+#endif
         lv_obj_add_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
         shown = true;
