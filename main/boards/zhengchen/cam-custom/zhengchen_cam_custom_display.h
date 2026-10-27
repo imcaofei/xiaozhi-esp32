@@ -161,8 +161,9 @@ public:
     /**
      * Live camera preview: copy one RGB565 frame into a PSRAM buffer and
      * show it in a full-screen overlay. Called from the preview task;
-     * thread-safe. Frames are expected at panel resolution (QVGA);
-     * PREVIEW_ROTATION rotates them and the result is scaled to fit.
+     * thread-safe. Frames arrive at the sensor resolution (VGA); they are
+     * downscaled by an integer factor here, then PREVIEW_ROTATION rotates
+     * them and the result is scaled to fit.
      */
     void ShowPreviewFrame(const void* data, size_t len, int width, int height) {
         if (!IsSetupUICalled() || data == nullptr) {
@@ -176,9 +177,21 @@ public:
             return;
         }
 
+        // Do not switch the sensor to QVGA at runtime: esp32-camera sizes its
+        // frame buffers at init (VGA), and any runtime resolution change makes
+        // it drop every frame with "cam_hal: FB-SIZE: 153600 != 614400".
+        // Downscale by an integer factor instead (VGA -> QVGA keeps the screen
+        // match without LVGL having to scale a 640x480 image per frame).
+        int step = 1;
+        while (step * 2 <= 8 && width / (step * 2) >= 160 && height / (step * 2) >= 160) {
+            step *= 2;
+        }
+
         const bool rotated = (PREVIEW_ROTATION == 90 || PREVIEW_ROTATION == 270);
-        const int dst_w = rotated ? height : width;
-        const int dst_h = rotated ? width : height;
+        const int sw = width / step;
+        const int sh = height / step;
+        const int dst_w = rotated ? sh : sw;
+        const int dst_h = rotated ? sw : sh;
         const size_t needed = static_cast<size_t>(dst_w) * dst_h * 2;
         if (preview_buf_ == nullptr || preview_buf_size_ < needed) {
             if (preview_buf_ != nullptr) {
@@ -196,20 +209,21 @@ public:
         uint16_t* dst = reinterpret_cast<uint16_t*>(preview_buf_);
         (void)len;
         if (rotated) {
-            for (int y = 0; y < height; ++y) {
-                for (int x = 0; x < width; ++x) {
-                    uint16_t px = src[y * width + x];
+            for (int y = 0; y < sh; ++y) {
+                const uint16_t* row = src + static_cast<size_t>(y) * step * width;
+                for (int x = 0; x < sw; ++x) {
+                    uint16_t px = row[static_cast<size_t>(x) * step];
 #if PREVIEW_SWAP_BYTES
                     px = __builtin_bswap16(px);
 #endif
                     if (PREVIEW_ROTATION == 90) {
-                        dst[(size_t)x * height + (height - 1 - y)] = px;  // 90° clockwise
+                        dst[static_cast<size_t>(x) * sh + (sh - 1 - y)] = px;  // 90° clockwise
                     } else {
-                        dst[(size_t)(width - 1 - x) * height + y] = px;  // 270° clockwise
+                        dst[static_cast<size_t>(sw - 1 - x) * sh + y] = px;    // 270° clockwise
                     }
                 }
             }
-        } else {
+        } else if (step == 1) {
             const size_t count = needed / 2;
 #if PREVIEW_SWAP_BYTES
             for (size_t i = 0; i < count; ++i) {
@@ -218,6 +232,18 @@ public:
 #else
             memcpy(dst, src, needed);
 #endif
+        } else {
+            for (int y = 0; y < sh; ++y) {
+                const uint16_t* row = src + static_cast<size_t>(y) * step * width;
+                uint16_t* out = dst + static_cast<size_t>(y) * sw;
+                for (int x = 0; x < sw; ++x) {
+                    uint16_t px = row[static_cast<size_t>(x) * step];
+#if PREVIEW_SWAP_BYTES
+                    px = __builtin_bswap16(px);
+#endif
+                    out[x] = px;
+                }
+            }
         }
 
         if (preview_dsc_.header.w != dst_w || preview_dsc_.header.h != dst_h) {

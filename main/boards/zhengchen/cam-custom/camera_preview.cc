@@ -22,12 +22,10 @@ bool CameraPreview::Start(ZhengchenCamCustomDisplay* display) {
         return false;
     }
 
-    // Switch the sensor to QVGA so the frame matches the LCD exactly
-    // (no software scaling). Restored on Stop().
-    sensor_t* sensor = esp_camera_sensor_get();
-    if (sensor != nullptr) {
-        sensor->set_framesize(sensor, FRAMESIZE_QVGA);
-    }
+    // Keep the sensor at its configured VGA resolution: esp32-camera sizes the
+    // frame buffers at init, so switching to QVGA here makes it drop every
+    // frame ("cam_hal: FB-SIZE: 153600 != 614400"). The display downscales
+    // VGA -> panel size in software instead.
 
     display_ = display;
     done_ = false;
@@ -60,7 +58,6 @@ void CameraPreview::TaskEntry(void* arg) {
 }
 
 void CameraPreview::TaskLoop() {
-    sensor_t* sensor = nullptr;
     const TickType_t retry_delay = pdMS_TO_TICKS(20);
     const int64_t start_us = esp_timer_get_time();
 
@@ -85,10 +82,6 @@ void CameraPreview::TaskLoop() {
         vTaskDelay(1);
     }
 
-    sensor = esp_camera_sensor_get();
-    if (sensor != nullptr) {
-        sensor->set_framesize(sensor, FRAMESIZE_VGA);
-    }
     if (display_ != nullptr) {
         display_->HidePreview();
     }

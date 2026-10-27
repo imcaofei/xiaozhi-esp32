@@ -81,7 +81,11 @@
 
 /* Camera live preview on the LCD */
 #define PREVIEW_FPS_CAP         15                    // upper bound, paced by the sensor anyway
-#define PREVIEW_SWAP_BYTES      0                     // set to 1 if colors look wrong on the panel
+// Must match the rest of the pipeline: the LVGL SPI flush uses swap_bytes = 1
+// and Esp32Camera::Capture() byte-swaps before JPEG encoding, both of which
+// assume the sensor emits RGB565 in big-endian order. Leaving this at 0 paints
+// the preview with wildly wrong colors (green/purple cast).
+#define PREVIEW_SWAP_BYTES      1
 #define PREVIEW_AUTO_STOP_MS    (5 * 60 * 1000)       // auto stop preview after 5 minutes
 #define PREVIEW_ROTATION        90                    // rotate preview frames: 0 / 90 (CW) / 270
 
